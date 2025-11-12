@@ -1,0 +1,53 @@
+name: Run power outages schedule generator
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npx playwright install chromium
+
+      - name: Run schedule generation script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GROUP: ${{ secrets.GROUP }}
+        run: node ./src/schedule.js
+
+      - name: Commit updated artifacts
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add artifacts/
+
+          if ! git diff --cached --quiet; then
+            LAST_COMMIT_MSG=$(git log -1 --pretty=%B || echo "")
+            if [ "$LAST_COMMIT_MSG" = "chore: update artifacts" ]; then
+              git commit --amend --no-edit
+            else
+              git commit -m "chore: update artifacts"
+            fi
+            git push origin main --force-with-lease
+          else
+            echo "No changes to commit"
+          fi
