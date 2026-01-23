@@ -43,6 +43,7 @@ const getShutdownsData = async () => {
     }
 
     const data = JSON.parse(match[1])
+    console.log(JSON.stringify(data, null, 2))
     console.log("✅ Getting shutdowns data finished.")
     return data
   } catch (error) {
