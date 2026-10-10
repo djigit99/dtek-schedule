@@ -28,9 +28,9 @@ const getShutdownsData = async () => {
   console.log("🌀 Getting shutdowns data...")
 
   const browser = await chromium.launch({ headless: true })
-  const browserPage = await browser.newPage()
 
   try {
+    const browserPage = await browser.newPage()
     await browserPage.goto(SHUTDOWNS_PAGE, {
       waitUntil: "load",
     })
@@ -48,22 +48,28 @@ const getShutdownsData = async () => {
     return data
   } catch (error) {
     console.error(`❌ Getting shutdowns data failed: ${error.message}.`)
-
-    if (getShutdownsDataRetries < RETRIES_MAX_COUNT) {
-      console.log("🌀 Try getting shutdowns data again...")
-      await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
-      return await getShutdownsData()
-    }
   } finally {
     await browser.close()
   }
+
+  if (getShutdownsDataRetries < RETRIES_MAX_COUNT) {
+    console.log("🌀 Try getting shutdowns data again...")
+    await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
+    getShutdownsDataRetries++
+    return await getShutdownsData()
+  }
+
+  throw Error(
+    `❌ Getting shutdowns data failed after ${RETRIES_MAX_COUNT} retries.`
+  )
 }
 
 function generateSchedule({ data, today }) {
   console.log("🌀 Generating schedule...")
 
   try {
-    const hoursStates = data?.[today]?.[GROUP]
+    const hoursStates = data[today][GROUP]
+    if (!hoursStates) throw Error(`group ${GROUP} not found`)
     const [schedule, setSchedule] = useSchedule([])
 
     hours.forEach((hour) => {
@@ -93,7 +99,7 @@ function generateSchedule({ data, today }) {
     console.log("✅ Generating schedule finished.")
 
     return schedule
-  } catch {
+  } catch (error) {
     throw Error(`❌ Generating schedule failed: ${error.message}.`)
   }
 }
@@ -106,74 +112,104 @@ function generateMessage(schedule = [], update) {
     ? console.log("🪫 Power shutdowns detected!")
     : console.log("🔋 No power shutdowns!")
 
-  const info = [
+  const scheduleText = [
     ...(isShutdownsExists
       ? schedule
           .filter(({ power }) => !power)
-          .map(({ begin, end }) => `🪫 <code>${begin} — ${end}\</code>`)
-      : schedule.map(({ begin, end }) => `🔋 <code>${begin} — ${end}\</code>`)),
+          .map(({ begin, end }) => `🪫 <code>${begin} — ${end}</code>`)
+      : schedule.map(({ begin, end }) => `🔋 <code>${begin} — ${end}</code>`)),
   ].join("\n")
 
-  return [
+  const text = [
     `⚡️ <b>Графік відключень на сьогодні:</b>`,
-    info,
-    "\n",
-    `🔄 <i>${update}</i>`,
-    `💬 <i>${getCurrentTime()}</i>`,
+    scheduleText,
+    "",
+    `📢 <i>${update}</i>`,
+    `🤖 <i>${getCurrentTime()}</i>`,
   ].join("\n")
+
+  return { text, scheduleText }
 }
 
-async function sendNotification(message) {
-  if (!TELEGRAM_BOT_TOKEN)
-    throw Error("❌ Missing telegram bot token or chat id.")
+async function sendNotification({ text, scheduleText }) {
+  if (!TELEGRAM_BOT_TOKEN) throw Error("❌ Missing telegram bot token.")
   if (!TELEGRAM_CHAT_ID) throw Error("❌ Missing telegram chat id.")
 
   console.log("🌀 Sending notification...")
 
   const lastMessage = loadLastMessage() || {}
+  const isScheduleChanged = lastMessage.scheduleText !== scheduleText
+  const isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
+  const isReply = Boolean(lastMessage.message_id) && isScheduleChanged
 
   try {
     const response = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${
-        lastMessage.message_id ? "editMessageText" : "sendMessage"
+        isEdit ? "editMessageText" : "sendMessage"
       }`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: TELEGRAM_CHAT_ID,
-          text: message,
+          text,
           parse_mode: "HTML",
-          silent: checkIsNight(),
-          message_id: lastMessage.message_id ?? undefined,
+          disable_notification: checkIsNight(),
+          message_id: isEdit ? lastMessage.message_id : undefined,
+          reply_parameters: isReply
+            ? {
+                message_id: lastMessage.message_id,
+                allow_sending_without_reply: true,
+              }
+            : undefined,
         }),
       }
     )
 
     const data = await response.json()
-    saveLastMessage(data.result)
+
+    if (data.description?.includes("not modified")) {
+      console.log("🟡 Notification not changed.")
+      return
+    }
+    if (!data.ok) throw Error(data.description)
+
+    saveLastMessage({ ...data.result, scheduleText })
 
     console.log("🟢 Notification sent.")
   } catch (error) {
-    console.log("🔴 Notification not sent.", error.message)
+    console.error(`❌ Sending notification failed: ${error.message}.`)
     deleteLastMessage()
 
     if (sendNotificationRetries < RETRIES_MAX_COUNT) {
       console.log("🌀 Try sending notification again...")
-      setTimeout(() => {
-        sendNotificationRetries++
-        sendNotification(info)
-      }, RETRIES_TIMEOUT)
+      await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
+      sendNotificationRetries++
+      return await sendNotification({ text, scheduleText })
     }
+
+    throw Error(
+      `❌ Sending notification failed after ${RETRIES_MAX_COUNT} retries.`
+    )
   }
 }
 
 async function run() {
   const data = await getShutdownsData()
-  const schedule = generateSchedule(data)
-  const scheduleMessage = generateMessage(schedule, data.update)
 
-  sendNotification(scheduleMessage)
+  const groups = data.data?.[data.today] ?? {}
+  if (!Object.keys(groups).length) {
+    console.log("🔋 No schedule for today.")
+    return
+  }
+
+  const schedule = generateSchedule(data)
+  const message = generateMessage(schedule, data.update)
+
+  await sendNotification(message)
 }
 
-run().catch((error) => console.error(error.message))
+run().catch((error) => {
+  console.error(error.message)
+  process.exitCode = 1
+})
