@@ -45,7 +45,6 @@ export function getCurrentTime() {
     timeZone: "Europe/Kyiv",
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
   })
 
   return `${date} ${time}`
@@ -57,7 +56,7 @@ export function checkIsNight() {
     hour: "numeric",
     hour12: false,
   })
-  return hours >= 0 && hours < 8
+  return hours >= 22 || hours < 8
 }
 
 export function loadLastMessage() {
@@ -85,17 +84,18 @@ export function loadLastMessage() {
   return lastMessage
 }
 
-export function saveLastMessage({ date, message_id } = {}) {
+export function saveLastMessage({ date, message_id, scheduleText } = {}) {
   fs.mkdirSync(path.dirname(LAST_MESSAGE_FILE), { recursive: true })
   fs.writeFileSync(
     LAST_MESSAGE_FILE,
     JSON.stringify({
       message_id,
       date,
+      scheduleText,
     })
   )
 }
 
 export function deleteLastMessage() {
-  fs.rmdirSync(path.dirname(LAST_MESSAGE_FILE), { recursive: true })
+  fs.rmSync(LAST_MESSAGE_FILE, { force: true })
 }
