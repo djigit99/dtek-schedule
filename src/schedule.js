@@ -65,7 +65,7 @@ const getShutdownsData = async () => {
 
     console.log(JSON.stringify(data, null, 2))
     console.log("✅ Getting shutdowns data finished.")
-    
+
     return { data: data, emergencyShutdown: emergencyShutdown }
   } catch (error) {
     console.error(`❌ Getting shutdowns data failed: ${error.message}.`)
