@@ -44,22 +44,22 @@ const getShutdownsData = async () => {
     const data = JSON.parse(match[1])
 
     const modal = browserPage.locator("#modal-attention");
-
-    const isOpen = await modal.evaluate((element) =>
-      element.classList.contains("is-open") &&
-      element.getAttribute("aria-hidden") === "false"
-    );
-
     let emergencyShutdown = false;
-    if (isOpen) {
-      const text = await modal.locator(".m-attention__text").innerText();
-      if (text.includes("екстрені відключення електроенергії")) {
-        console.log("Знайдено екстрені відключення");
-        emergencyShutdown = true;
-      } else if (text.includes("діють стабілізаційні відключення")) {
-        console.log("Знайдено стабілізаційні відключення");
-      } else {
-        console.log("нічого не знайдено")
+    if (await modal.count() > 0) {
+      const isOpen = await modal.evaluate((element) =>
+        element.classList.contains("is-open") &&
+        element.getAttribute("aria-hidden") === "false"
+      );
+      if (isOpen) {
+        const text = await modal.locator(".m-attention__text").innerText();
+        if (text.includes("екстрені відключення електроенергії")) {
+          console.log("Знайдено екстрені відключення");
+          emergencyShutdown = true;
+        } else if (text.includes("діють стабілізаційні відключення")) {
+          console.log("Знайдено стабілізаційні відключення");
+        } else {
+          console.log("нічого не знайдено")
+        }
       }
     }
 
