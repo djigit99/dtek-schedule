@@ -6,7 +6,6 @@ import {
   getCurrentTime,
   loadLastMessage,
   saveLastMessage,
-  deleteLastMessage,
   useSchedule,
 } from "./helpers.js"
 import {
@@ -20,7 +19,6 @@ import {
   RETRIES_TIMEOUT,
   RETRIES_MAX_COUNT,
 } from "./constants.js"
-
 let sendNotificationRetries = 0
 let getShutdownsDataRetries = 0
 
@@ -155,33 +153,47 @@ function generateMessage(schedule = [], update) {
   return { text, scheduleText }
 }
 
-async function sendNotification({ text, scheduleText, emergencyShutdown }) {
+function moderateText({ text, scheduleText, emergencyShutdown }) {
+  const lastMessage = loadLastMessage() || {}
+  const wasEmergencyShutdown = lastMessage.emergencyShutdown
+  const isScheduleChanged = lastMessage.scheduleText !== scheduleText
+
+  let modifiedText = text;
+  let isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
+  let isReply = Boolean(lastMessage.message_id) && isScheduleChanged
+
+  if (emergencyShutdown === true) {
+    modifiedText =
+      "🟡 Аварійні відключення. Графіки не діють.\n\n" +
+      `🤖 <i>${getCurrentTime()}</i>`;
+
+    isReply = !wasEmergencyShutdown;
+    isEdit = Boolean(wasEmergencyShutdown);
+  } else if (wasEmergencyShutdown === true) {
+    modifiedText =
+      "🟢 Аварійні відключення скасовано, повертаємось до графіків\n\n" +
+      text;
+
+    isReply = true;
+    isEdit = false;
+  }
+
+  if (text !== modifiedText) {
+    console.log("✅ Text modified")
+    console.log("text:\n " + text)
+    console.log("modified text:\n " + modifiedText)
+  }
+
+  return [modifiedText, isEdit, isReply, lastMessage];
+}
+
+async function sendNotification({ text, isEdit, isReply, lastMessage }) {
   if (!TELEGRAM_BOT_TOKEN) throw Error("❌ Missing telegram bot token.")
   if (!TELEGRAM_CHAT_ID) throw Error("❌ Missing telegram chat id.")
 
   console.log("🌀 Sending notification...")
 
-  const lastMessage = loadLastMessage() || {}
-  const wasEmergencyShutdown = lastMessage.emergencyShutdown
-
-  const isScheduleChanged = lastMessage.scheduleText !== scheduleText
-  let isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
-  let isReply = Boolean(lastMessage.message_id) && isScheduleChanged
-
   try {
-    if (!wasEmergencyShutdown && emergencyShutdown === true) {
-      text = "🟡 Аварійні відключення. Графіки не діють.\n\n" + `🤖 <i>${getCurrentTime()}</i>` ;
-      isReply = true;
-      isEdit = false;
-    } else if (wasEmergencyShutdown === true && emergencyShutdown === false) {
-      text = "🟢 Аварійні відключення скасовано, повертаємось до графіків\n\n" + text;
-      isReply = true;
-      isEdit = false;
-    } else if (wasEmergencyShutdown === true && emergencyShutdown === true){
-      text = "🟡 Аварійні відключення. Графіки не діють.\n\n" + `🤖 <i>${getCurrentTime()}</i>`;
-      isReply = false;
-      isEdit = true;
-    }
 
     const response = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${isEdit ? "editMessageText" : "sendMessage"
@@ -209,22 +221,21 @@ async function sendNotification({ text, scheduleText, emergencyShutdown }) {
 
     if (data.description?.includes("not modified")) {
       console.log("🟡 Notification not changed.")
-      return
+      return lastMessage;
     }
     if (!data.ok) throw Error(data.description)
 
-    saveLastMessage({ ...data.result, scheduleText, emergencyShutdown })
-
     console.log("🟢 Notification sent.")
+
+    return data.result;
   } catch (error) {
     console.error(`❌ Sending notification failed: ${error.message}.`)
-    deleteLastMessage()
 
     if (sendNotificationRetries < RETRIES_MAX_COUNT) {
       console.log("🌀 Try sending notification again...")
       await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
       sendNotificationRetries++
-      return await sendNotification({ text, scheduleText, emergencyShutdown })
+      return await sendNotification({ text, isEdit, isReply, lastMessage })
     }
 
     throw Error(
@@ -243,9 +254,12 @@ async function run() {
   }
 
   const schedule = generateSchedule(data)
-  const message = generateMessage(schedule, data.update)
+  const { text, scheduleText } = generateMessage(schedule, data.update)
+  const [modifiedText, isEdit, isReply, lastMessage] = moderateText({ text, scheduleText, emergencyShutdown });
 
-  await sendNotification({...message, emergencyShutdown})
+  const result = await sendNotification({ text: modifiedText, isEdit, isReply, lastMessage });
+
+  saveLastMessage({ date: result.date, message_id: result.message_id, scheduleText, emergencyShutdown })
 }
 
 run().catch((error) => {
