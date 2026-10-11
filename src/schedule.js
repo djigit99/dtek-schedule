@@ -28,6 +28,7 @@ const getShutdownsData = async () => {
   console.log("🌀 Getting shutdowns data...")
 
   const browser = await chromium.launch({ headless: true })
+  // const browser = await chromium.launch({ headless: false, slowMo: 500 })
 
   try {
     const browserPage = await browser.newPage()
@@ -43,9 +44,31 @@ const getShutdownsData = async () => {
     }
 
     const data = JSON.parse(match[1])
+
+    const modal = browserPage.locator("#modal-attention");
+
+    const isOpen = await modal.evaluate((element) =>
+      element.classList.contains("is-open") &&
+      element.getAttribute("aria-hidden") === "false"
+    );
+
+    let emergencyShutdown = false;
+    if (isOpen) {
+      const text = await modal.locator(".m-attention__text").innerText();
+      if (text.includes("екстрені відключення електроенергії")) {
+        console.log("Знайдено екстрені відключення");
+        emergencyShutdown = true;
+      } else if (text.includes("діють стабілізаційні відключення")) {
+        console.log("Знайдено стабілізаційні відключення");
+      } else {
+        console.log("нічого не знайдено")
+      }
+    }
+
     console.log(JSON.stringify(data, null, 2))
     console.log("✅ Getting shutdowns data finished.")
-    return data
+    
+    return { data: data, emergencyShutdown: emergencyShutdown }
   } catch (error) {
     console.error(`❌ Getting shutdowns data failed: ${error.message}.`)
   } finally {
@@ -68,6 +91,7 @@ function generateSchedule({ data, today }) {
   console.log("🌀 Generating schedule...")
 
   try {
+    console.log("group: " + GROUP);
     const hoursStates = data[today][GROUP]
     if (!hoursStates) throw Error(`group ${GROUP} not found`)
     const [schedule, setSchedule] = useSchedule([])
@@ -115,8 +139,8 @@ function generateMessage(schedule = [], update) {
   const scheduleText = [
     ...(isShutdownsExists
       ? schedule
-          .filter(({ power }) => !power)
-          .map(({ begin, end }) => `🪫 <code>${begin} — ${end}</code>`)
+        .filter(({ power }) => !power)
+        .map(({ begin, end }) => `🪫 <code>${begin} — ${end}</code>`)
       : schedule.map(({ begin, end }) => `🔋 <code>${begin} — ${end}</code>`)),
   ].join("\n")
 
@@ -131,21 +155,36 @@ function generateMessage(schedule = [], update) {
   return { text, scheduleText }
 }
 
-async function sendNotification({ text, scheduleText }) {
+async function sendNotification({ text, scheduleText, emergencyShutdown }) {
   if (!TELEGRAM_BOT_TOKEN) throw Error("❌ Missing telegram bot token.")
   if (!TELEGRAM_CHAT_ID) throw Error("❌ Missing telegram chat id.")
 
   console.log("🌀 Sending notification...")
 
   const lastMessage = loadLastMessage() || {}
+  const wasEmergencyShutdown = lastMessage.emergencyShutdown
+
   const isScheduleChanged = lastMessage.scheduleText !== scheduleText
-  const isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
-  const isReply = Boolean(lastMessage.message_id) && isScheduleChanged
+  let isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
+  let isReply = Boolean(lastMessage.message_id) && isScheduleChanged
 
   try {
+    if (!wasEmergencyShutdown && emergencyShutdown === true) {
+      text = "🟡 Аварійні відключення. Графіки не діють.\n\n" + `🤖 <i>${getCurrentTime()}</i>` ;
+      isReply = true;
+      isEdit = false;
+    } else if (wasEmergencyShutdown === true && emergencyShutdown === false) {
+      text = "🟢 Аварійні відключення скасовано, повертаємось до графіків\n\n" + text;
+      isReply = true;
+      isEdit = false;
+    } else if (wasEmergencyShutdown === true && emergencyShutdown === true){
+      text = "🟡 Аварійні відключення. Графіки не діють.\n\n" + `🤖 <i>${getCurrentTime()}</i>`;
+      isReply = false;
+      isEdit = true;
+    }
+
     const response = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${
-        isEdit ? "editMessageText" : "sendMessage"
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${isEdit ? "editMessageText" : "sendMessage"
       }`,
       {
         method: "POST",
@@ -158,9 +197,9 @@ async function sendNotification({ text, scheduleText }) {
           message_id: isEdit ? lastMessage.message_id : undefined,
           reply_parameters: isReply
             ? {
-                message_id: lastMessage.message_id,
-                allow_sending_without_reply: true,
-              }
+              message_id: lastMessage.message_id,
+              allow_sending_without_reply: true,
+            }
             : undefined,
         }),
       }
@@ -174,7 +213,7 @@ async function sendNotification({ text, scheduleText }) {
     }
     if (!data.ok) throw Error(data.description)
 
-    saveLastMessage({ ...data.result, scheduleText })
+    saveLastMessage({ ...data.result, scheduleText, emergencyShutdown })
 
     console.log("🟢 Notification sent.")
   } catch (error) {
@@ -185,7 +224,7 @@ async function sendNotification({ text, scheduleText }) {
       console.log("🌀 Try sending notification again...")
       await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
       sendNotificationRetries++
-      return await sendNotification({ text, scheduleText })
+      return await sendNotification({ text, scheduleText, emergencyShutdown })
     }
 
     throw Error(
@@ -195,7 +234,7 @@ async function sendNotification({ text, scheduleText }) {
 }
 
 async function run() {
-  const data = await getShutdownsData()
+  const { data, emergencyShutdown } = await getShutdownsData()
 
   const groups = data.data?.[data.today] ?? {}
   if (!Object.keys(groups).length) {
@@ -206,7 +245,7 @@ async function run() {
   const schedule = generateSchedule(data)
   const message = generateMessage(schedule, data.update)
 
-  await sendNotification(message)
+  await sendNotification({...message, emergencyShutdown})
 }
 
 run().catch((error) => {

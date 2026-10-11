@@ -84,7 +84,7 @@ export function loadLastMessage() {
   return lastMessage
 }
 
-export function saveLastMessage({ date, message_id, scheduleText } = {}) {
+export function saveLastMessage({ date, message_id, scheduleText, emergencyShutdown } = {}) {
   fs.mkdirSync(path.dirname(LAST_MESSAGE_FILE), { recursive: true })
   fs.writeFileSync(
     LAST_MESSAGE_FILE,
@@ -92,6 +92,7 @@ export function saveLastMessage({ date, message_id, scheduleText } = {}) {
       message_id,
       date,
       scheduleText,
+      emergencyShutdown
     })
   )
 }
